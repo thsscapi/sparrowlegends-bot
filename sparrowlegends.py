@@ -31,6 +31,7 @@ Use !sparrowhelp for commands. Keep sparrowlegends.sqlite3 between restarts.
 # SOFTWARE.
 
 import argparse
+from collections import OrderedDict
 from contextlib import closing
 from datetime import datetime, timezone
 import io
@@ -53,6 +54,8 @@ import websocket
 API = "https://legends.ml/api"
 GUIDES = "https://guides.sparrowtools.net"
 SUPPRESS_EMBEDS = 1 << 2
+USER_COMMAND_COOLDOWN = 3
+BOSS_TIMER_NOTICE = "Timers are temporary and may be lost when the bot restarts or is redeployed."
 # Source: Freddie Bot (MIT), Abram Sanderson.
 BOSSES = {"anego":480,"samurai":660,"mano":60,"faust":120,"clang":120,"timer":120,"mushmom":120,"bmushmom":240,"dyle":120,"zmushmom":120,"fox":180,"taeroon":180,"sagecat":180,"eliza":180,"snowman":180,"manon":90,"griffey":90,"pianusl":2160,"pianusr":1440,"stumpy":60,"balrog":180,"deo":60,"seruf":60,"zeno":120,"kimera":180,"levi":240,"dodo":240,"lilynouch":240,"lyka":240,"crow":1380,"spirit":720,"shade":180,"dummy":180,"riche":180,"witch":180,"camera":180,"scholar":180,"rurumo":40,"deetnroi":40}
 WASH = {
@@ -288,6 +291,7 @@ class MapleCommands:
         self.client = client
         self.db = db
         self.queue = Queue(maxsize=24)
+        self.recent_commands = OrderedDict()
         with closing(self.connect()) as conn, conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS boss_timers (
@@ -318,10 +322,19 @@ class MapleCommands:
         room = str(event.get("channel_id", ""))
         if name not in USAGE or not room.isdecimal():
             return False
+        user_id = str(author["id"])
+        now = time.monotonic()
+        cutoff = now - USER_COMMAND_COOLDOWN
+        while self.recent_commands and next(iter(self.recent_commands.values())) <= cutoff:
+            self.recent_commands.popitem(last=False)
+        if user_id in self.recent_commands:
+            return True
         try:
             self.queue.put_nowait((guild, room, name, arguments))
         except Full:
             logging.warning("Maple command queue is full")
+        else:
+            self.recent_commands[user_id] = now
         return True
 
     def send(self, room, payload, image=None, filename="levels.png"):
@@ -348,6 +361,7 @@ class MapleCommands:
         try:
             if name == "bosstimer":
                 result = self.bosstimer(guild, room, text)
+                result += f"\n\n{BOSS_TIMER_NOTICE}"
             else:
                 result = getattr(self, name)(room, text)
         except InputError as error:
@@ -375,7 +389,9 @@ class MapleCommands:
         )
         return ("**SparrowLegends commands**\n"
                 "Replace bracketed labels with your input. Leave out optional inputs you do not need.\n\n"
-                + body)
+                + body
+                + "\n\nEach user can run one command every 3 seconds. "
+                "Community admins can limit the bot to one channel and enable Slowmode there.")
 
     def maple(self, room, text):
         name, = names(text, 1)
